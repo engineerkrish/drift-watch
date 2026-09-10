@@ -1,83 +1,91 @@
+from pathlib import Path
+
 from driftwatch.scanner.code_scanner import scan_code
 from driftwatch.scanner.config_scanner import scan_configs
 from driftwatch.engine.drift_engine import build_findings
 
 
-def test_driftwatch_detects_core_drift(tmp_path):
-    # Create a completely isolated test repository.
-    root = tmp_path
-
-    src = root / "src"
-    src.mkdir()
-
-    # Code references:
-    # - DATABASE_URL -> defined everywhere
-    # - PAYMENTS_WEBHOOK_SECRET -> missing in staging
-    # - MAX_RETRY_COUNT -> type mismatch in production
-    code = src / "app.py"
-    code.write_text(
-        """
-import os
-
-database_url = os.getenv("DATABASE_URL")
-webhook_secret = os.getenv("PAYMENTS_WEBHOOK_SECRET")
-max_retry_count = os.getenv("MAX_RETRY_COUNT")
-""",
-        encoding="utf-8",
-    )
-
-    # Development: numeric 5
-    (root / ".env.development").write_text(
-        """
-DATABASE_URL=postgres://dev
-PAYMENTS_WEBHOOK_SECRET=dev-secret
-MAX_RETRY_COUNT=5
-ORPHAN_KEY=hello
-""",
-        encoding="utf-8",
-    )
-
-    # Staging: missing PAYMENTS_WEBHOOK_SECRET
-    (root / ".env.staging").write_text(
-        """
-DATABASE_URL=postgres://staging
-MAX_RETRY_COUNT=5
-ORPHAN_KEY=hello
-""",
-        encoding="utf-8",
-    )
-
-    # Production: quoted "5" -> string, creating type mismatch
-    (root / ".env.production").write_text(
-        """
-DATABASE_URL=postgres://production
-PAYMENTS_WEBHOOK_SECRET=prod-secret
-MAX_RETRY_COUNT="5"
-ORPHAN_KEY=hello
-""",
-        encoding="utf-8",
-    )
-
+def scan_fixture(root: Path):
     used = scan_code(root)
     configs = scan_configs(root)
-    findings = build_findings(used, configs)
+    return build_findings(used, configs)
+
+
+def test_demo_detects_drift():
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "demo"
+
+    findings = scan_fixture(root)
 
     categories = {finding.category for finding in findings}
 
-    # Core challenge requirements.
     assert "missing" in categories
     assert "orphaned" in categories
-    assert "type-mismatch" in categories
 
-    # Make sure the secret value never appears in findings.
-    text = str(findings)
 
-    assert "dev-secret" not in text
-    assert "prod-secret" not in text
+def test_type_mismatch_detection(tmp_path):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
 
-    # Verify the actual keys were detected.
-    keys = {finding.key for finding in findings}
+    (source_dir / "app.py").write_text(
+        'import os\n'
+        'retry_count = os.getenv("MAX_RETRY_COUNT")\n',
+        encoding="utf-8",
+    )
 
-    assert "PAYMENTS_WEBHOOK_SECRET" in keys
-    assert "MAX_RETRY_COUNT" in keys
-    assert "ORPHAN_KEY" in keys
+    (tmp_path / ".env.development").write_text(
+        "MAX_RETRY_COUNT=5\n",
+        encoding="utf-8",
+    )
+
+    (tmp_path / ".env.staging").write_text(
+        "MAX_RETRY_COUNT=5\n",
+        encoding="utf-8",
+    )
+
+    (tmp_path / ".env.production").write_text(
+        'MAX_RETRY_COUNT="5"\n',
+        encoding="utf-8",
+    )
+
+    findings = scan_fixture(tmp_path)
+
+    mismatches = [
+        finding
+        for finding in findings
+        if finding.category == "type-mismatch"
+        and finding.key == "MAX_RETRY_COUNT"
+    ]
+
+    assert len(mismatches) == 1
+    assert "production=string" in mismatches[0].note
+
+
+def test_secret_values_never_appear():
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "demo"
+
+    findings = scan_fixture(root)
+
+    forbidden = [
+        "dev-secret-never-printed",
+        "staging-secret-never-printed",
+        "prod-secret-never-printed",
+        "FAKE_SECRET_VALUE",
+        "fake-password",
+    ]
+
+    rendered = repr(findings)
+
+    for secret in forbidden:
+        assert secret not in rendered
+
+
+def test_scan_is_repeatable():
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "demo"
+
+    first = scan_fixture(root)
+    second = scan_fixture(root)
+
+    first_fingerprints = sorted(f.fingerprint for f in first)
+    second_fingerprints = sorted(f.fingerprint for f in second)
+
+    assert first_fingerprints == second_fingerprints
