@@ -1,0 +1,48 @@
+name: Drift Watch
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  drift-watch:
+    name: Drift Watch CI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run automated tests
+        run: python -m pytest tests
+
+      - name: Scan clean configuration
+        run: |
+          python -m driftwatch scan fixtures/clean \
+            --report DRIFT-REPORT.md \
+            --state .driftwatch/ci-state.json
+
+      - name: Add Drift Watch report to job summary
+        if: always()
+        run: |
+          if [ -f DRIFT-REPORT.md ]; then
+            cat DRIFT-REPORT.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Drift Watch report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-watch-report
+          path: DRIFT-REPORT.md

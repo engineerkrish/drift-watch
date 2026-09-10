@@ -1,0 +1,6 @@
+services:
+  api:
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      API_BASE_URL: ${API_BASE_URL}
+      LEGACY_CACHE_HOST: cache-staging.internal
